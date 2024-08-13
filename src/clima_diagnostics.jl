@@ -300,3 +300,34 @@ function IntegratorWithDiagnostics(integrator, scheduled_diagnostics)
 
     return integrator
 end
+
+"""
+    @assign out rhs1 rhs2
+    @assign out rhs
+
+This macro expands to
+```
+if isnothing(out, rhs1, rhs2)
+    rhs1
+else
+    out .= rhs2
+end
+```
+When `rhs2` is not provided, it is assumed that `rhs2 = rhs1`.
+
+This macro is used for `compute!` functions. The first time a `compute!` function
+is called, `out` is `nothing` and a new output is allocated. The subsequent times,
+`out` is used.
+
+!!! compat "ClimaDiagnostics 0.2.4"
+    This macro was introduced in version `0.2.4`.
+"""
+macro assign(out, rhs1, rhs2 = rhs1)
+    quote
+        if isnothing($(esc(out)))
+            $(esc(rhs1))
+        else
+            $(esc(out)) .= $(esc(rhs2))
+        end
+    end
+end

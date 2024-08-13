@@ -62,14 +62,28 @@ or `integrator.Y`).
 
 `compute_ta!` takes another argument, `out`. `out` is an area of memory managed
 by `ClimaDiagnostics` that is used to reduce the number of allocations needed
-when working with diagnostics. The first time the diagnostic is called, an area
-of memory is allocated and filled with the value (this is when `out` is
-`nothing`). All the subsequent times, the same space is overwritten, leading to
-much better performance. You should follow this pattern in all your diagnostics.
+when working with diagnostics and improve performance. The first time the
+diagnostic is called, an area of memory is allocated and filled with the value
+(this is when `out` is `nothing`). All the subsequent times, the same space is
+overwritten, leading to much better performance. You should follow this pattern
+in all your diagnostics. To help you with that, `ClimaDiagnostics` provides a
+macro, `@assign`, that expands to the if switch, so that `compute_ta!` can be
+written as
+
+```julia
+import ClimaDiagnostics: DiagnosticVariable, @assign
+
+function compute_ta!(out, state, cache, time)
+    @assign out copy(state.ta) state.ta
+end
+```
+Note that when the second and third arguments of `@assign` are the same, one of
+the two can be omitted.
 
 > Note, in the future, we hope to improve this rather clumsy way to write
 > diagnostics. Hopefully, at some point you will just have to write something like
-> `state.ta` and not worry about the `out` at all.
+> `state.ta` and not worry about the `out` at all. For the time being, we recommend
+> using the `@assign` macro to help with possible future transitions.
 
 A `DiagnosticVariable` defines what a variable is and how to compute it, but
 does not specify when to compute/output it. For that, we need
