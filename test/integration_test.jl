@@ -12,6 +12,8 @@ import ClimaComms
     ClimaComms.@import_required_backends
 end
 
+import LazyBroadcast: @lazy
+
 const context = ClimaComms.context()
 ClimaComms.init(context)
 
@@ -41,13 +43,27 @@ function setup_integrator(output_dir; context, more_compute_diagnostics = 0)
     )
 
     function compute_my_var!(out, u, p, t)
-        ClimaDiagnostics.@assign out copy(u.my_var)
+        if isnothing(out)
+            return copy(u.my_var)
+        else
+            out .= u.my_var
+        end
+    end
+
+    function compute_my_var_lazy!(out, u, p, t)
+        return @lazy @. out = u.my_var
     end
 
     simple_var = ClimaDiagnostics.DiagnosticVariable(;
         compute! = compute_my_var!,
         short_name = "YO",
         long_name = "YO YO",
+    )
+
+    simple_var_lazy = ClimaDiagnostics.DiagnosticVariable(;
+        compute! = compute_my_var_lazy!,
+        short_name = "YO LAZY",
+        long_name = "YO YO LAZY",
     )
 
     average_diagnostic = ClimaDiagnostics.ScheduledDiagnostic(
@@ -59,6 +75,10 @@ function setup_integrator(output_dir; context, more_compute_diagnostics = 0)
     )
     inst_diagnostic = ClimaDiagnostics.ScheduledDiagnostic(
         variable = simple_var,
+        output_writer = nc_writer,
+    )
+    inst_diagnostic_lazy = ClimaDiagnostics.ScheduledDiagnostic(
+        variable = simple_var_lazy,
         output_writer = nc_writer,
     )
     inst_every3s_diagnostic = ClimaDiagnostics.ScheduledDiagnostic(
@@ -76,6 +96,7 @@ function setup_integrator(output_dir; context, more_compute_diagnostics = 0)
     scheduled_diagnostics = [
         average_diagnostic,
         inst_diagnostic,
+        inst_diagnostic_lazy,
         inst_diagnostic_h5,
         inst_every3s_diagnostic,
     ]

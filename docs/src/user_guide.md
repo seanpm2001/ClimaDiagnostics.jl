@@ -58,7 +58,8 @@ var = DiagnosticVariable(;
 `compute_ta!` is the key function here. It determines how the variable should be
 computed from the `state`, `cache`, and `time` of the simulation. Typically,
 these are packaged within an `integrator` object (e.g., `state = integrator.u`
-or `integrator.Y`).
+or `integrator.Y`). `copy` is needed because we want to return a new area of
+memory (without `copy`, `ClimaDiagnostics` might end up modifying `state.ta`).
 
 `compute_ta!` takes another argument, `out`. `out` is an area of memory managed
 by `ClimaDiagnostics` that is used to reduce the number of allocations needed
@@ -69,9 +70,8 @@ overwritten, leading to much better performance. You should follow this pattern
 in all your diagnostics. To help you with that, `ClimaDiagnostics` provides a
 macro, `@assign`, that expands to the if switch, so that `compute_ta!` can be
 written as
-
 ```julia
-import ClimaDiagnostics: DiagnosticVariable, @assign
+import ClimaDiagnostics: @assign
 
 function compute_ta!(out, state, cache, time)
     @assign out copy(state.ta) state.ta
@@ -80,10 +80,18 @@ end
 Note that when the second and third arguments of `@assign` are the same, one of
 the two can be omitted.
 
-> Note, in the future, we hope to improve this rather clumsy way to write
-> diagnostics. Hopefully, at some point you will just have to write something like
-> `state.ta` and not worry about the `out` at all. For the time being, we recommend
-> using the `@assign` macro to help with possible future transitions.
+`ClimaDiagnostics` supports working with unevaluated expressions represented by
+`Base.Broadcast.Broadcasted` objects, such as the ones produced with
+[LazyBroadcast.jl](https://github.com/CliMA/LazyBroadcast.jl). Using
+`LazyBroadcast.jl`, the previous snippet can be rewritten as
+```julia
+import LazyBroadcast: @lazy
+
+function compute_ta!(out, state, cache, time)
+    @lazy @. out = state.ta
+end
+```
+Using lazy expressions can lead to improved performance and clearer code.
 
 A `DiagnosticVariable` defines what a variable is and how to compute it, but
 does not specify when to compute/output it. For that, we need

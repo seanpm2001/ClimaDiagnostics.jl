@@ -18,6 +18,7 @@ struct DiagnosticsHandler{
     STORAGE <: Dict,
     ACC <: Dict,
     COUNT <: Dict,
+    BROAD <: Dict,
 }
     """An iterable with the `ScheduledDiagnostic`s that are scheduled."""
     scheduled_diagnostics::SD
@@ -34,6 +35,11 @@ struct DiagnosticsHandler{
     many times the given diagnostics was computed from the last time it was output to
     disk."""
     counters::COUNT
+
+    """Dictionary that maps a given `ScheduledDiagnostic` to a Base.Broadcast.Broadcasted
+    object. This is used to allow lazy evaluation of expressions, which can lead to reduced
+    code verbosity and improved performance."""
+    broadcasted_expressions::BROAD
 end
 
 """
@@ -57,9 +63,11 @@ function DiagnosticsHandler(scheduled_diagnostics, Y, p, t; dt = nothing)
 
     # For diagnostics that perform reductions, the storage is used for the values computed
     # at each call. Reductions also save the accumulated value in accumulators.
+    # broadcasted_expressions maps diagnostics with LazyBroadcast objects.
     storage = Dict()
     accumulators = Dict()
     counters = Dict()
+    broadcasted_expressions = Dict()
 
     unique_scheduled_diagnostics = Tuple(unique(scheduled_diagnostics))
     if length(unique_scheduled_diagnostics) != length(scheduled_diagnostics)
@@ -90,8 +98,18 @@ function DiagnosticsHandler(scheduled_diagnostics, Y, p, t; dt = nothing)
         isa_time_reduction = !isnothing(diag.reduction_time_func)
 
         # The first time we call compute! we use its return value. All the subsequent times
-        # (in the callbacks), we will write the result in place
-        storage[diag] = variable.compute!(nothing, Y, p, t)
+        # (in the callbacks), we will write the result in place. ClimaDiagnostics supports
+        # LazyBroadcast.jl. In this case, the return value of `compute!` is a
+        # `Base.Broadcast.Broadcasted` and we have to manually materialize the result.
+        out_or_broadcasted_expr = variable.compute!(nothing, Y, p, t)
+        if out_or_broadcasted_expr isa Base.Broadcast.Broadcasted
+            broadcasted_expressions[diag] = out_or_broadcasted_expr
+            storage[diag] =
+                Base.Broadcast.materialize(broadcasted_expressions[diag])
+        else
+            storage[diag] = out_or_broadcasted_expr
+        end
+
         counters[diag] = 1
 
         # If it is not a reduction, call the output writer as well
@@ -115,6 +133,7 @@ function DiagnosticsHandler(scheduled_diagnostics, Y, p, t; dt = nothing)
         storage,
         accumulators,
         counters,
+        broadcasted_expressions,
     )
 end
 
@@ -153,13 +172,42 @@ function orchestrate_diagnostics(
         active_compute[diag_index] || continue
         diag = scheduled_diagnostics[diag_index]
 
-        diag.variable.compute!(
+        diagnostic_handler.counters[diag] += 1
+
+        # ClimaDiagnostics supports LazyBroadcast.jl. When used, the return value of
+        # `compute!` is a `Base.Broadcast.Broadcasted`. We materialize the output to
+        # diagnostic_handler.storage[diag] in the next for loop. If the output is not a
+        # `Base.Broadcast.Broadcasted`, we don't have to do anything because compute! will
+        # already update diagnostic_handler.storage[diag].
+
+        out_or_broadcasted_expr = diag.variable.compute!(
             diagnostic_handler.storage[diag],
             integrator.u,
             integrator.p,
             integrator.t,
         )
-        diagnostic_handler.counters[diag] += 1
+        if out_or_broadcasted_expr isa Base.Broadcast.Broadcasted
+            diagnostic_handler.broadcasted_expressions[diag] =
+                out_or_broadcasted_expr
+        end
+    end
+
+    # Evaluate the lazy compute (aka, materialize everything)
+    for diag_index in 1:length(scheduled_diagnostics)
+        active_compute[diag_index] || continue
+        diag = scheduled_diagnostics[diag_index]
+        haskey(diagnostic_handler.broadcasted_expressions, diag) || continue
+
+        Base.Broadcast.materialize!(
+            diagnostic_handler.storage[diag],
+            diagnostic_handler.broadcasted_expressions[diag],
+        )
+    end
+
+    # Process possible time reductions (now we have evaluated storage[diag])
+    for diag_index in 1:length(scheduled_diagnostics)
+        active_compute[diag_index] || continue
+        diag = scheduled_diagnostics[diag_index]
 
         isa_time_reduction = !isnothing(diag.reduction_time_func)
         if isa_time_reduction
